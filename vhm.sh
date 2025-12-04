@@ -81,10 +81,27 @@ self_update() {
   echo -e "${YELLOW}⚠ Có bản mới: ${LATEST_VERSION} (hiện tại: ${VHM_VERSION}).${RESET}"
   echo -e "${BLUE}→ Đang cập nhật...${RESET}"
 
-  TMP_FILE=$(mktemp)
-  curl -fsSL "${REPO_BASE}/vhm.sh" -o "$TMP_FILE"
-  sudo mv "$TMP_FILE" /usr/local/bin/vhm
+  # Cập nhật vhm.sh
+  TMP_VHM=$(mktemp)
+  if ! curl -fsSL "${REPO_BASE}/vhm.sh" -o "$TMP_VHM"; then
+    echo -e "${RED}❌ Tải vhm.sh thất bại, giữ nguyên bản hiện tại.${RESET}"
+    rm -f "$TMP_VHM"
+    exit 1
+  fi
+  sudo mv "$TMP_VHM" /usr/local/bin/vhm
   sudo chmod +x /usr/local/bin/vhm
+  echo -e "${GREEN}✔ Đã cập nhật /usr/local/bin/vhm${RESET}"
+
+  # Cập nhật / cài mới pg_backup_b2.sh
+  TMP_BKP=$(mktemp)
+  if curl -fsSL "${REPO_BASE}/pg_backup_b2.sh" -o "$TMP_BKP"; then
+    sudo mv "$TMP_BKP" /usr/local/bin/pg_backup_b2.sh
+    sudo chmod +x /usr/local/bin/pg_backup_b2.sh
+    echo -e "${GREEN}✔ Đã cập nhật /usr/local/bin/pg_backup_b2.sh${RESET}"
+  else
+    rm -f "$TMP_BKP"
+    echo -e "${YELLOW}⚠ Không tải được pg_backup_b2.sh (nhưng vhm đã được cập nhật).${RESET}"
+  fi
 
   echo -e "${GREEN}✅ Cập nhật thành công lên v${LATEST_VERSION}.${RESET}"
   exit 0
