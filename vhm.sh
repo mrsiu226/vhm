@@ -6,7 +6,7 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.0.0"
+VHM_VERSION="1.1.0"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
@@ -35,7 +35,7 @@ log() {
 
 require_root() {
   if [[ "$EUID" -ne 0 ]]; then
-    echo -e "${RED}⚠ Script này nên chạy với quyền root (sudo).${RESET}"
+    echo -e "${RED}⚠ VHM nên chạy với quyền root (sudo).${RESET}"
     exit 1
   fi
 }
@@ -78,7 +78,7 @@ self_update() {
     exit 0
   fi
 
-  echo -e "${YELLOW}⚠ Có bản mới: ${LATEST_VERSION} (bạn đang dùng ${VHM_VERSION}).${RESET}"
+  echo -e "${YELLOW}⚠ Có bản mới: ${LATEST_VERSION} (hiện tại: ${VHM_VERSION}).${RESET}"
   echo -e "${BLUE}→ Đang cập nhật...${RESET}"
 
   TMP_FILE=$(mktemp)
@@ -324,7 +324,226 @@ list_users_and_dbs() {
     "
 
   echo ""
-  echo "👉 Gợi ý: dùng full-screen (Alt+Enter / tmux) để xem bảng đẹp hơn."
+  echo "👉 Gợi ý: dùng full-screen để xem bảng đẹp hơn."
+}
+
+########################################
+# BACKUP → B2 (gọi pg_backup_b2.sh)
+########################################
+
+backup_to_b2_menu() {
+  echo -e "${BLUE}=== BACKUP PostgreSQL → B2 (rclone) ===${RESET}"
+
+  if ! command -v rclone >/dev/null 2>&1; then
+    echo -e "${RED}❌ Chưa cài rclone. Cài: apt install rclone${RESET}"
+    return
+  fi
+
+  if [[ ! -x /usr/local/bin/pg_backup_b2.sh ]]; then
+    echo -e "${RED}❌ Không tìm thấy /usr/local/bin/pg_backup_b2.sh hoặc chưa chmod +x.${RESET}"
+    echo "   Đảm bảo đã cài bằng install.sh mới."
+    return
+  fi
+
+  read -rp "👉 Nhập tên DB (bỏ trống = backup tất cả DB non-template): " DB_NAME
+
+  if [[ -n "$DB_NAME" ]]; then
+    /usr/local/bin/pg_backup_b2.sh "$DB_NAME"
+  else
+    /usr/local/bin/pg_backup_b2.sh
+  fi
+
+  echo -e "${GREEN}✔ Backup + sync B2 hoàn tất.${RESET}"
+  echo -e "  ➜ Local: /opt/pg_backups"
+  echo -e "  ➜ Log  : /var/log/pg_backup_b2_rclone.log"
+}
+
+########################################
+# CẤU HÌNH RCLONE_REMOTE
+########################################
+
+setup_rclone_remote() {
+  echo -e "${BLUE}=== CẤU HÌNH RCLONE_REMOTE (B2) ===${RESET}"
+  echo "File cấu hình: /etc/vhm-backup.conf"
+
+  if ! command -v rclone >/dev/null 2>&1; then
+    echo -e "${RED}❌ Chưa cài rclone. Cài: apt install rclone${RESET}"
+    return
+  fi
+
+  while true; do
+    read -rp "👉 Nhập remote + path B2 (ví dụ: b2backup:postgres-backup): " NEW_REMOTE
+
+    if [[ -z "$NEW_REMOTE" ]]; then
+      echo -e "${RED}❌ RCLONE_REMOTE không được để trống.${RESET}"
+      continue
+    fi
+
+    echo -e "${BLUE}→ Đang kiểm tra remote: ${NEW_REMOTE}${RESET}"
+    echo "   (test: rclone ls \"${NEW_REMOTE}\" --max-depth 1 --max-size 1b)"
+
+    if rclone ls "${NEW_REMOTE}" --max-depth 1 --max-size 1b >/dev/null 2>&1; then
+      echo -e "${GREEN}✔ Remote hợp lệ, truy cập được.${RESET}"
+      echo "RCLONE_REMOTE=\"${NEW_REMOTE}\"" | sudo tee /etc/vhm-backup.conf >/dev/null
+
+      echo -e "${GREEN}✔ Đã lưu cấu hình vào /etc/vhm-backup.conf${RESET}"
+      echo -e "${GREEN}✔ pg_backup_b2.sh sẽ dùng remote này${RESET}"
+      echo ""
+      echo "Nội dung /etc/vhm-backup.conf:"
+      cat /etc/vhm-backup.conf
+      break
+    else
+      echo -e "${RED}❌ Remote không truy cập được.${RESET}"
+      echo "   Kiểm tra:"
+      echo "   - 'rclone config' đã tạo remote chưa"
+      echo "   - Tên remote/bucket/path có đúng không"
+      read -rp "👉 Nhập lại remote? (y/n): " AGAIN
+      if [[ "$AGAIN" != "y" ]]; then
+        echo -e "${YELLOW}⚠ Giữ nguyên cấu hình cũ (nếu có).${RESET}"
+        break
+      fi
+    fi
+  done
+}
+
+check_current_remote() {
+  echo -e "${BLUE}=== KIỂM TRA RCLONE_REMOTE HIỆN TẠI ===${RESET}"
+
+  if ! command -v rclone >/dev/null 2>&1; then
+    echo -e "${RED}❌ Chưa cài rclone. Cài: apt install rclone${RESET}"
+    return
+  fi
+
+  if [[ ! -f /etc/vhm-backup.conf ]]; then
+    echo -e "${YELLOW}⚠ Chưa có /etc/vhm-backup.conf.${RESET}"
+    echo "   Vào menu 'Cấu hình RCLONE_REMOTE' để thiết lập."
+    return
+  fi
+
+  # shellcheck disable=SC1091
+  source /etc/vhm-backup.conf
+
+  if [[ -z "${RCLONE_REMOTE:-}" ]]; then
+    echo -e "${RED}❌ RCLONE_REMOTE trong /etc/vhm-backup.conf đang trống.${RESET}"
+    return
+  fi
+
+  echo "RCLONE_REMOTE hiện tại: ${RCLONE_REMOTE}"
+  echo -e "${BLUE}→ Test truy cập remote...${RESET}"
+
+  if rclone ls "${RCLONE_REMOTE}" --max-depth 1 --max-size 1b >/dev/null 2>&1; then
+    echo -e "${GREEN}✔ Remote truy cập được.${RESET}"
+    echo -e "${BLUE}→ Dung lượng remote (rclone size)...${RESET}"
+    rclone size "${RCLONE_REMOTE}" || true
+  else
+    echo -e "${RED}❌ Remote không truy cập được.${RESET}"
+    echo "   Kiểm tra rclone config."
+  fi
+}
+
+########################################
+# CRON BACKUP
+########################################
+
+setup_backup_cron() {
+  echo -e "${BLUE}=== THIẾT LẬP CRON BACKUP TỰ ĐỘNG → B2 ===${RESET}"
+  echo "Cron chạy dưới user root."
+
+  if [[ ! -x /usr/local/bin/pg_backup_b2.sh ]]; then
+    echo -e "${RED}❌ Không tìm thấy /usr/local/bin/pg_backup_b2.sh hoặc chưa chmod +x.${RESET}"
+    return
+  fi
+
+  read -rp "👉 Nhập tên DB (bỏ trống = backup tất cả DB non-template): " CRON_DB
+  echo ""
+  echo "⏰ Thời gian chạy (theo giờ server)"
+  read -rp "👉 Giờ (0-23, mặc định 3): " HOUR
+  read -rp "👉 Phút (0-59, mặc định 0): " MINUTE
+
+  HOUR=${HOUR:-3}
+  MINUTE=${MINUTE:-0}
+
+  if ! [[ "$HOUR" =~ ^[0-9]+$ ]] || ! [[ "$MINUTE" =~ ^[0-9]+$ ]] || [ "$HOUR" -lt 0 ] || [ "$HOUR" -gt 23 ] || [ "$MINUTE" -lt 0 ] || [ "$MINUTE" -gt 59 ]; then
+    echo -e "${RED}❌ Giờ/phút không hợp lệ.${RESET}"
+    return
+  fi
+
+  if [[ -n "$CRON_DB" ]]; then
+    CRON_CMD="/usr/local/bin/pg_backup_b2.sh ${CRON_DB} >> /var/log/pg_backup_b2_cron_${CRON_DB}.log 2>&1"
+  else
+    CRON_CMD="/usr/local/bin/pg_backup_b2.sh >> /var/log/pg_backup_b2_cron_all.log 2>&1"
+  fi
+
+  CRON_EXPR="${MINUTE} ${HOUR} * * * ${CRON_CMD}"
+
+  echo ""
+  echo -e "${YELLOW}Cron sẽ được thiết lập:${RESET}"
+  echo "  ${CRON_EXPR}"
+  echo ""
+  read -rp "👉 Xác nhận tạo cron này? (y/n): " CONFIRM
+  if [[ "$CONFIRM" != "y" ]]; then
+    echo -e "${RED}❌ Hủy thiết lập cron.${RESET}"
+    return
+  fi
+
+  EXISTING_CRON=$(sudo crontab -l 2>/dev/null | sed '/pg_backup_b2.sh/d' || true)
+
+  {
+    echo "$EXISTING_CRON"
+    echo "$CRON_EXPR"
+  } | sudo crontab -
+
+  echo ""
+  echo -e "${GREEN}✔ Đã cập nhật cron backup tự động.${RESET}"
+  echo "Xem bằng: sudo crontab -l | grep pg_backup_b2.sh"
+}
+
+show_backup_cron() {
+  echo -e "${BLUE}=== CRON BACKUP HIỆN TẠI (root) ===${RESET}"
+
+  CRON_CONTENT=$(sudo crontab -l 2>/dev/null | grep 'pg_backup_b2.sh' || true)
+
+  if [[ -z "$CRON_CONTENT" ]]; then
+    echo -e "${YELLOW}⚠ Chưa có cron nào chứa 'pg_backup_b2.sh' trong crontab root.${RESET}"
+  else
+    echo "Các dòng cron backup:"
+    echo "$CRON_CONTENT"
+  fi
+}
+
+disable_backup_cron() {
+  echo -e "${BLUE}=== TẮT CRON BACKUP TỰ ĐỘNG ===${RESET}"
+  echo "Xử lý crontab của user root."
+
+  CURRENT_CRON=$(sudo crontab -l 2>/dev/null || true)
+
+  if [[ -z "$CURRENT_CRON" ]] || ! echo "$CURRENT_CRON" | grep -q 'pg_backup_b2.sh'; then
+    echo -e "${YELLOW}⚠ Không có dòng cron nào chứa 'pg_backup_b2.sh'.${RESET}"
+    return
+  fi
+
+  echo "Các dòng cron backup hiện có:"
+  echo "--------------------------------"
+  echo "$CURRENT_CRON" | grep 'pg_backup_b2.sh'
+  echo "--------------------------------"
+  echo
+  read -rp "👉 Xác nhận XOÁ TẤT CẢ các dòng cron chứa 'pg_backup_b2.sh'? (y/n): " CONFIRM
+  if [[ "$CONFIRM" != "y" ]]; then
+    echo -e "${RED}❌ Hủy thao tác tắt cron backup.${RESET}"
+    return
+  fi
+
+  NEW_CRON=$(echo "$CURRENT_CRON" | sed '/pg_backup_b2.sh/d' || true)
+
+  if [[ -z "$NEW_CRON" ]]; then
+    sudo crontab -r
+    echo -e "${GREEN}✔ Đã xoá toàn bộ crontab của root (vì chỉ còn cron backup).${RESET}"
+  else
+    printf "%s\n" "$NEW_CRON" | sudo crontab -
+    echo -e "${GREEN}✔ Đã xoá các dòng cron backup, giữ nguyên cron khác.${RESET}"
+  fi
+
+  echo "Kiểm tra lại bằng: sudo crontab -l"
 }
 
 ########################################
@@ -339,12 +558,18 @@ main_menu() {
   echo ""
 
   while true; do
-    echo -e "${CYAN}===== MENU =====${RESET}"
+    echo -e "${CYAN}===== MENU VHM =====${RESET}"
     echo "1) Tạo user + database"
     echo "2) Xoá user + database"
     echo "3) Liệt kê user & database"
     echo "4) Thoát"
-    read -rp "👉 Chọn (1-4): " CHOICE
+    echo "5) Backup DB → B2 (pg_dump + rclone)"
+    echo "6) Cấu hình RCLONE_REMOTE (B2)"
+    echo "7) Kiểm tra RCLONE_REMOTE hiện tại"
+    echo "8) Thiết lập cron backup tự động"
+    echo "9) Xem cron backup hiện tại"
+    echo "10) Tắt cron backup (xoá các dòng pg_backup_b2.sh)"
+    read -rp "👉 Chọn (1-10): " CHOICE
 
     case "$CHOICE" in
       1)
@@ -363,6 +588,30 @@ main_menu() {
         echo -e "${GREEN}Tạm biệt!${RESET}"
         exit 0
         ;;
+      5)
+        backup_to_b2_menu
+        pause
+        ;;
+      6)
+        setup_rclone_remote
+        pause
+        ;;
+      7)
+        check_current_remote
+        pause
+        ;;
+      8)
+        setup_backup_cron
+        pause
+        ;;
+      9)
+        show_backup_cron
+        pause
+        ;;
+      10)
+        disable_backup_cron
+        pause
+        ;;
       *)
         echo -e "${RED}❌ Lựa chọn không hợp lệ${RESET}"
         ;;
@@ -371,7 +620,7 @@ main_menu() {
 }
 
 ########################################
-# ENTRYPOINT — XỬ LÝ SUBCOMMAND
+# ENTRYPOINT — SUBCOMMAND
 ########################################
 
 case "${1:-}" in
