@@ -20,7 +20,7 @@ Tích hợp đầy đủ:
 ## 🚀 Cài đặt VHM
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<USERNAME>/vhm/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mrsiu226/vhm/main/install.sh | sudo bash
 ```
 
 Sau khi cài:
