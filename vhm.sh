@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /   # tránh warning /root
+cd /  # tránh warning could not change directory to /root
 
-# =============================
-# 🎨 COLORS
-# =============================
+########################################
+# CẤU HÌNH CƠ BẢN
+########################################
+
+VHM_VERSION="1.0.0"
+
+REPO_PATH="mrsiu226/vhm"
+REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
+
+SYSTEM_PG_USER="postgres"
+LOG_FILE="/var/log/pg_ultra_tool.log"
+
+########################################
+# MÀU
+########################################
+
 GREEN="\e[32m"
 RED="\e[31m"
 YELLOW="\e[33m"
@@ -12,8 +25,9 @@ BLUE="\e[34m"
 CYAN="\e[36m"
 RESET="\e[0m"
 
-LOG_FILE="/var/log/pg_ultra_tool.log"
-SYSTEM_PG_USER="postgres"
+########################################
+# HÀM TIỆN ÍCH
+########################################
 
 log() {
   echo -e "$(date '+%Y-%m-%d %H:%M:%S') | $1" | tee -a "$LOG_FILE"
@@ -29,7 +43,7 @@ require_root() {
 header() {
   echo -e "${CYAN}"
   echo "=============================================="
-  echo "   🔥 POSTGRESQL ULTRA TOOL — USER & DB MANAGER"
+  echo "   🔥 VHM — POSTGRESQL ULTRA TOOL (v${VHM_VERSION})"
   echo "=============================================="
   echo "   Hỗ trợ tạo/xoá user và database PostgreSQL"
   echo "   Tác giả: MrSiu"
@@ -41,9 +55,71 @@ pause() {
   read -rp "Nhấn Enter để tiếp tục..." _
 }
 
-# =============================
-# LẤY CONFIG
-# =============================
+########################################
+# AUTO UPDATE
+########################################
+
+self_update() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo -e "${RED}❌ Cần cài curl trước (apt install curl -y).${RESET}"
+    exit 1
+  fi
+
+  echo -e "${BLUE}🔍 Kiểm tra bản cập nhật...${RESET}"
+  LATEST_VERSION=$(curl -fsSL "${REPO_BASE}/version.txt" 2>/dev/null || echo "")
+
+  if [[ -z "$LATEST_VERSION" ]]; then
+    echo -e "${RED}❌ Không lấy được version.txt từ repo.${RESET}"
+    exit 1
+  fi
+
+  if [[ "$LATEST_VERSION" == "$VHM_VERSION" ]]; then
+    echo -e "${GREEN}✅ VHM đang là bản mới nhất (${VHM_VERSION}).${RESET}"
+    exit 0
+  fi
+
+  echo -e "${YELLOW}⚠ Có bản mới: ${LATEST_VERSION} (bạn đang dùng ${VHM_VERSION}).${RESET}"
+  echo -e "${BLUE}→ Đang cập nhật...${RESET}"
+
+  TMP_FILE=$(mktemp)
+  curl -fsSL "${REPO_BASE}/vhm.sh" -o "$TMP_FILE"
+  sudo mv "$TMP_FILE" /usr/local/bin/vhm
+  sudo chmod +x /usr/local/bin/vhm
+
+  echo -e "${GREEN}✅ Cập nhật thành công lên v${LATEST_VERSION}.${RESET}"
+  exit 0
+}
+
+check_for_update_hint() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return
+  fi
+
+  LATEST=$(curl -fsSL "${REPO_BASE}/version.txt" 2>/dev/null || echo "")
+  if [[ -n "$LATEST" && "$LATEST" != "$VHM_VERSION" ]]; then
+    echo -e "${YELLOW}🔔 Có bản VHM mới: ${LATEST} (hiện tại: ${VHM_VERSION})"
+    echo -e "   Gõ '${CYAN}vhm update${YELLOW}' để cập nhật.${RESET}"
+    echo ""
+  fi
+}
+
+print_help() {
+  cat <<EOF
+VHM — PostgreSQL Ultra Tool (v${VHM_VERSION})
+
+Cách dùng:
+  vhm           # chạy menu tương tác
+  vhm update    # cập nhật VHM lên bản mới nhất
+  vhm version   # in version hiện tại
+  vhm help      # xem trợ giúp
+
+EOF
+}
+
+########################################
+# LẤY ĐƯỜNG DẪN CONFIG POSTGRES
+########################################
+
 get_pg_conf_paths() {
   CONFIG_FILE=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SHOW config_file;" | xargs)
   HBA_FILE=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SHOW hba_file;" | xargs)
@@ -92,7 +168,7 @@ test_connection() {
 
   echo -e "${BLUE}→ Test kết nối user mới...${RESET}"
   local TEST_CMD
-  TEST_CMD=$(PGPASSWORD="$PG_PASS" psql -U "$PG_USER" -d "$PG_DB" -h localhost -tAc "SELECT 1;" || true)
+  TEST_CMD=$(PGPASSWORD="$PG_PASS" psql -U "$PG_USER" -d "$PG_DB" -h localhost -tAc "SELECT 1;" 2>/dev/null || true)
 
   if [[ "$TEST_CMD" == "1" ]]; then
     log "Test kết nối OK cho user ${PG_USER} / db ${PG_DB}"
@@ -103,9 +179,10 @@ test_connection() {
   fi
 }
 
-# =============================
-# CHỨC NĂNG 1: TẠO USER + DB
-# =============================
+########################################
+# CHỨC NĂNG: TẠO USER + DB
+########################################
+
 create_user_and_db() {
   echo -e "${BLUE}=== TẠO USER + DATABASE MỚI ===${RESET}"
   read -rp "👉 Nhập tên user PostgreSQL: " PG_USER
@@ -168,9 +245,10 @@ create_user_and_db() {
   echo "Database : $PG_DB"
 }
 
-# =============================
-# CHỨC NĂNG 2: XOÁ USER + DB
-# =============================
+########################################
+# CHỨC NĂNG: XOÁ USER + DB
+########################################
+
 delete_user_and_db() {
   echo -e "${BLUE}=== XOÁ USER + DATABASE ===${RESET}"
   read -rp "👉 Nhập tên user PostgreSQL cần xoá: " PG_USER
@@ -183,7 +261,7 @@ delete_user_and_db() {
   read -rp "👉 Gõ CHAPNHAN để xác nhận: " CONFIRM
   [[ "$CONFIRM" == "CHAPNHAN" ]] || { echo -e "${RED}❌ Hủy thao tác xoá${RESET}"; return; }
 
-  # DROP DB (nếu tồn tại)
+  # DROP DB
   local DB_EXISTS
   DB_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_database WHERE datname='${PG_DB}'" || true)
   if [[ -n "$DB_EXISTS" ]]; then
@@ -196,7 +274,7 @@ delete_user_and_db() {
     echo -e "${YELLOW}⚠ Database không tồn tại, bỏ qua${RESET}"
   fi
 
-  # DROP USER (nếu tồn tại)
+  # DROP USER
   local USER_EXISTS
   USER_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${PG_USER}'" || true)
   if [[ -n "$USER_EXISTS" ]]; then
@@ -207,7 +285,7 @@ delete_user_and_db() {
     echo -e "${YELLOW}⚠ User không tồn tại, bỏ qua${RESET}"
   fi
 
-  # Xoá rule trong pg_hba.conf nếu có
+  # Xoá rule pg_hba.conf
   get_pg_conf_paths
   if [[ -f "$HBA_FILE" ]]; then
     sudo sed -i "/${PG_USER}/d" "$HBA_FILE"
@@ -219,9 +297,10 @@ delete_user_and_db() {
   echo -e "${GREEN}🎉 HOÀN TẤT XOÁ USER + DB${RESET}"
 }
 
-# =============================
-# CHỨC NĂNG 3: LIỆT KÊ USER & DB
-# =============================
+########################################
+# CHỨC NĂNG: LIỆT KÊ USER & DB
+########################################
+
 list_users_and_dbs() {
   echo -e "${BLUE}=== DANH SÁCH USER (ROLES) ===${RESET}"
   sudo -u "$SYSTEM_PG_USER" psql \
@@ -229,7 +308,7 @@ list_users_and_dbs() {
     -c "\du"
 
   echo ""
-  echo -e "${BLUE}=== DANH SÁCH DATABASES ===${RESET}"
+  echo -e "${BLUE}=== DANH SÁCH DATABASES (non-template) ===${RESET}"
   sudo -u "$SYSTEM_PG_USER" psql \
     -P pager=off -P "format=aligned" -P "border=2" \
     -c "
@@ -245,14 +324,17 @@ list_users_and_dbs() {
     "
 
   echo ""
-  echo "👉 Tip: bạn có thể dùng 'vhm' ở chế độ full-screen để đẹp nhất."
+  echo "👉 Gợi ý: dùng full-screen (Alt+Enter / tmux) để xem bảng đẹp hơn."
 }
-# =============================
+
+########################################
 # MENU CHÍNH
-# =============================
+########################################
+
 main_menu() {
   require_root
   header
+  check_for_update_hint
   echo "Log file: $LOG_FILE"
   echo ""
 
@@ -288,4 +370,21 @@ main_menu() {
   done
 }
 
-main_menu
+########################################
+# ENTRYPOINT — XỬ LÝ SUBCOMMAND
+########################################
+
+case "${1:-}" in
+  update)
+    self_update
+    ;;
+  version)
+    echo "VHM version ${VHM_VERSION}"
+    ;;
+  help|-h|--help)
+    print_help
+    ;;
+  *)
+    main_menu
+    ;;
+esac
