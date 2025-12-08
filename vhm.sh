@@ -268,9 +268,33 @@ create_user_and_db() {
 
 delete_user_and_db() {
   echo -e "${BLUE}=== XOÁ USER + DATABASE ===${RESET}"
+  
+  # Hiển thị danh sách databases
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql -tAc "
+    SELECT datname FROM pg_database 
+    WHERE datistemplate = false 
+    ORDER BY datname;
+  " | while read -r db; do
+    echo "  - $db"
+  done
+  echo ""
+  
+  # Hiển thị danh sách users
+  echo -e "${YELLOW}Danh sách user hiện có:${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql -tAc "
+    SELECT rolname FROM pg_roles 
+    WHERE rolcanlogin = true 
+    ORDER BY rolname;
+  " | while read -r user; do
+    echo "  - $user"
+  done
+  echo ""
+  
   read -rp "👉 Nhập tên user PostgreSQL cần xoá: " PG_USER
   read -rp "👉 Nhập tên database cần xoá: " PG_DB
 
+  echo ""
   echo -e "${YELLOW}Bạn chuẩn bị XOÁ:${RESET}"
   echo "User     : $PG_USER"
   echo "Database : $PG_DB"
