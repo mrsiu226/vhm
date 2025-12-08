@@ -6,7 +6,7 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.1.0"
+VHM_VERSION="1.2.4"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
