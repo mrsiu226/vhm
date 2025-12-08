@@ -269,28 +269,29 @@ create_user_and_db() {
 delete_user_and_db() {
   echo -e "${BLUE}=== XOÁ USER + DATABASE ===${RESET}"
   
-  # Hiển thị danh sách databases
-  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
-  sudo -u "$SYSTEM_PG_USER" psql -tAc "
-    SELECT datname FROM pg_database 
-    WHERE datistemplate = false 
-    ORDER BY datname;
-  " | while read -r db; do
-    echo "  - $db"
-  done
+  # Hiển thị danh sách users dạng bảng
+  echo -e "${YELLOW}Danh sách USER hiện có:${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql \
+    -P pager=off -P "format=aligned" -P "border=2" \
+    -c "\du"
+  
   echo ""
   
-  # Hiển thị danh sách users
-  echo -e "${YELLOW}Danh sách user hiện có:${RESET}"
-  sudo -u "$SYSTEM_PG_USER" psql -tAc "
-    SELECT rolname FROM pg_roles 
-    WHERE rolcanlogin = true 
-    ORDER BY rolname;
-  " | while read -r user; do
-    echo "  - $user"
-  done
-  echo ""
+  # Hiển thị danh sách databases dạng bảng
+  echo -e "${YELLOW}Danh sách DATABASE hiện có:${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql \
+    -P pager=off -P "format=aligned" -P "border=2" \
+    -c "
+      SELECT
+        d.datname AS database,
+        pg_catalog.pg_get_userbyid(d.datdba) AS owner,
+        pg_size_pretty(pg_database_size(d.datname)) AS size
+      FROM pg_database d
+      WHERE d.datistemplate = false
+      ORDER BY d.datname;
+    "
   
+  echo ""
   read -rp "👉 Nhập tên user PostgreSQL cần xoá: " PG_USER
   read -rp "👉 Nhập tên database cần xoá: " PG_DB
 
