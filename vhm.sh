@@ -476,13 +476,27 @@ clone_database() {
   # Cấp quyền nếu tạo user mới
   if [[ "$CREATE_NEW_USER" == true ]]; then
     echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Cấp quyền cho user mới...${RESET}"
+    
+    # Quyền database
     sudo -u "$SYSTEM_PG_USER" psql -c "GRANT ALL PRIVILEGES ON DATABASE ${TARGET_DB} TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -c "GRANT CREATE ON DATABASE ${TARGET_DB} TO ${TARGET_USER};"
+    
+    # Quyền schema
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON SCHEMA public TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT USAGE ON SCHEMA public TO ${TARGET_USER};"
+    
+    # Quyền cho các objects ĐÃ TỒN TẠI (tables, sequences, functions)
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL TABLES IN SCHEMA public TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO ${TARGET_USER};"
+    
+    # Quyền mặc định cho các objects SẼ TẠO SAU NÀY
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${TARGET_USER};"
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${TARGET_USER};"
-    sudo -u "$SYSTEM_PG_USER" psql -c "GRANT CREATE ON DATABASE ${TARGET_DB} TO ${TARGET_USER};"
-    log "Cấp quyền cho user ${TARGET_USER} trên database ${TARGET_DB}"
-    echo -e "${GREEN}✔ Đã cấp quyền${RESET}"
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO ${TARGET_USER};"
+    
+    log "Cấp quyền đầy đủ cho user ${TARGET_USER} trên database ${TARGET_DB}"
+    echo -e "${GREEN}✔ Đã cấp quyền cho tất cả objects${RESET}"
     ((STEP++))
     
     echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Cấu hình remote access...${RESET}"
@@ -784,13 +798,13 @@ main_menu() {
     echo "2) Xoá user + database"
     echo "3) Liệt kê user & database"
     echo "4) Clone database"
-    echo "5) Thoát"
-    echo "6) Backup DB → B2 (pg_dump + rclone)"
-    echo "7) Cấu hình RCLONE_REMOTE (B2)"
-    echo "8) Kiểm tra RCLONE_REMOTE hiện tại"
-    echo "9) Thiết lập cron backup tự động"
-    echo "10) Xem cron backup hiện tại"
-    echo "11) Tắt cron backup (xoá các dòng pg_backup_b2.sh)"
+    echo "5) Backup DB → B2 (pg_dump + rclone)"
+    echo "6) Cấu hình RCLONE_REMOTE (B2)"
+    echo "7) Kiểm tra RCLONE_REMOTE hiện tại"
+    echo "8) Thiết lập cron backup tự động"
+    echo "9) Xem cron backup hiện tại"
+    echo "10) Tắt cron backup (xoá các dòng pg_backup_b2.sh)"
+    echo "11) Thoát"
     read -rp "👉 Chọn (1-11): " CHOICE
 
     case "$CHOICE" in
@@ -811,32 +825,32 @@ main_menu() {
         pause
         ;;
       5)
-        echo -e "${GREEN}Tạm biệt!${RESET}"
-        exit 0
-        ;;
-      6)
         backup_to_b2_menu
         pause
         ;;
-      7)
+      6)
         setup_rclone_remote
         pause
         ;;
-      8)
+      7)
         check_current_remote
         pause
         ;;
-      9)
+      8)
         setup_backup_cron
         pause
         ;;
-      10)
+      9)
         show_backup_cron
         pause
         ;;
-      11)
+      10)
         disable_backup_cron
         pause
+        ;;
+      11)
+        echo -e "${GREEN}Tạm biệt!${RESET}"
+        exit 0
         ;;
       *)
         echo -e "${RED}❌ Lựa chọn không hợp lệ${RESET}"
