@@ -315,6 +315,210 @@ delete_user_and_db() {
 }
 
 ########################################
+# CHỨC NĂNG: CLONE DATABASE
+########################################
+
+clone_database() {
+  echo -e "${BLUE}=== CLONE DATABASE ===${RESET}"
+  
+  # Liệt kê databases hiện có
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql -tAc "
+    SELECT datname FROM pg_database 
+    WHERE datistemplate = false 
+    ORDER BY datname;
+  " | while read -r db; do
+    echo "  - $db"
+  done
+  echo ""
+  
+  read -rp "👉 Nhập tên database nguồn (cần clone): " SOURCE_DB
+  read -rp "👉 Nhập tên database đích (tên DB mới sẽ được tạo): " TARGET_DB
+  
+  if [[ -z "$SOURCE_DB" || -z "$TARGET_DB" ]]; then
+    echo -e "${RED}❌ Tên database không được để trống.${RESET}"
+    return
+  fi
+  
+  # Kiểm tra database nguồn có tồn tại không
+  local SOURCE_EXISTS
+  SOURCE_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_database WHERE datname='${SOURCE_DB}'" || true)
+  if [[ -z "$SOURCE_EXISTS" ]]; then
+    echo -e "${RED}❌ Database nguồn '${SOURCE_DB}' không tồn tại.${RESET}"
+    return
+  fi
+  
+  # Kiểm tra database đích đã tồn tại chưa
+  local TARGET_EXISTS
+  TARGET_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_database WHERE datname='${TARGET_DB}'" || true)
+  if [[ -n "$TARGET_EXISTS" ]]; then
+    echo -e "${RED}❌ Database đích '${TARGET_DB}' đã tồn tại. Vui lòng chọn tên khác.${RESET}"
+    return
+  fi
+  
+  # Hỏi về user
+  echo ""
+  echo -e "${YELLOW}=== CẤU HÌNH USER CHO DATABASE MỚI ===${RESET}"
+  echo "1) Tạo user mới cho database này"
+  echo "2) Dùng user hiện có"
+  echo "3) Dùng user postgres (mặc định)"
+  read -rp "👉 Chọn (1-3): " USER_CHOICE
+  
+  local TARGET_USER=""
+  local TARGET_PASS=""
+  local CREATE_NEW_USER=false
+  
+  case "$USER_CHOICE" in
+    1)
+      read -rp "👉 Nhập tên user mới: " TARGET_USER
+      read -rsp "👉 Nhập password cho user mới (ẩn): " TARGET_PASS
+      echo ""
+      
+      if [[ -z "$TARGET_USER" || -z "$TARGET_PASS" ]]; then
+        echo -e "${RED}❌ Tên user và password không được để trống.${RESET}"
+        return
+      fi
+      
+      # Kiểm tra user đã tồn tại chưa
+      local USER_EXISTS
+      USER_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${TARGET_USER}'" || true)
+      if [[ -n "$USER_EXISTS" ]]; then
+        echo -e "${RED}❌ User '${TARGET_USER}' đã tồn tại. Vui lòng chọn tên khác.${RESET}"
+        return
+      fi
+      CREATE_NEW_USER=true
+      ;;
+    2)
+      echo -e "${YELLOW}Danh sách user hiện có:${RESET}"
+      sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT rolname FROM pg_roles WHERE rolcanlogin = true ORDER BY rolname;" | while read -r user; do
+        echo "  - $user"
+      done
+      read -rp "👉 Nhập tên user hiện có: " TARGET_USER
+      
+      if [[ -z "$TARGET_USER" ]]; then
+        echo -e "${RED}❌ Tên user không được để trống.${RESET}"
+        return
+      fi
+      
+      # Kiểm tra user có tồn tại không
+      local USER_EXISTS
+      USER_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${TARGET_USER}'" || true)
+      if [[ -z "$USER_EXISTS" ]]; then
+        echo -e "${RED}❌ User '${TARGET_USER}' không tồn tại.${RESET}"
+        return
+      fi
+      ;;
+    3|"")
+      TARGET_USER="$SYSTEM_PG_USER"
+      echo -e "${GREEN}✔ Sẽ dùng user postgres${RESET}"
+      ;;
+    *)
+      echo -e "${RED}❌ Lựa chọn không hợp lệ${RESET}"
+      return
+      ;;
+  esac
+  
+  echo ""
+  echo -e "${YELLOW}Chuẩn bị clone:${RESET}"
+  echo "  Database nguồn: $SOURCE_DB"
+  echo "  Database mới (sẽ tạo): $TARGET_DB"
+  echo "  Owner: $TARGET_USER"
+  if [[ "$CREATE_NEW_USER" == true ]]; then
+    echo "  → Sẽ tạo user mới: $TARGET_USER"
+  fi
+  echo ""
+  echo -e "${CYAN}💡 Chức năng này sẽ:${RESET}"
+  echo "  - Tạo database mới '${TARGET_DB}'"
+  echo "  - Clone toàn bộ cấu trúc và dữ liệu từ '${SOURCE_DB}'"
+  echo "  - Ngắt kết nối tạm thời đến DB nguồn trong quá trình clone"
+  if [[ "$CREATE_NEW_USER" == true ]]; then
+    echo "  - Tạo user mới '${TARGET_USER}' và cấp quyền"
+  fi
+  echo ""
+  read -rp "👉 Xác nhận clone? (y/n): " CONFIRM
+  [[ "$CONFIRM" == "y" ]] || { echo -e "${RED}❌ Hủy thao tác${RESET}"; return; }
+  
+  local STEP=1
+  local TOTAL_STEPS=4
+  if [[ "$CREATE_NEW_USER" == true ]]; then
+    TOTAL_STEPS=6
+  fi
+  
+  # Tạo user mới nếu cần
+  if [[ "$CREATE_NEW_USER" == true ]]; then
+    echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Tạo user mới...${RESET}"
+    sudo -u "$SYSTEM_PG_USER" psql -c "CREATE USER ${TARGET_USER} WITH PASSWORD '${TARGET_PASS}';"
+    log "Tạo user ${TARGET_USER} cho clone database"
+    echo -e "${GREEN}✔ Đã tạo user${RESET}"
+    ((STEP++))
+  fi
+  
+  echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Ngắt kết nối đến database nguồn...${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql -c "
+    SELECT pg_terminate_backend(pid) 
+    FROM pg_stat_activity 
+    WHERE datname='${SOURCE_DB}' AND pid <> pg_backend_pid();
+  " >/dev/null 2>&1 || true
+  echo -e "${GREEN}✔ Đã ngắt các kết nối${RESET}"
+  ((STEP++))
+  
+  echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Đang tạo database mới và clone dữ liệu...${RESET}"
+  if sudo -u "$SYSTEM_PG_USER" psql -c "CREATE DATABASE ${TARGET_DB} WITH TEMPLATE ${SOURCE_DB} OWNER ${TARGET_USER};"; then
+    log "Clone database từ ${SOURCE_DB} sang ${TARGET_DB} với owner ${TARGET_USER}"
+    echo -e "${GREEN}✔ Clone thành công - database mới đã được tạo${RESET}"
+  else
+    echo -e "${RED}❌ Clone thất bại${RESET}"
+    log "Clone database FAILED: ${SOURCE_DB} -> ${TARGET_DB}"
+    return
+  fi
+  ((STEP++))
+  
+  # Cấp quyền nếu tạo user mới
+  if [[ "$CREATE_NEW_USER" == true ]]; then
+    echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Cấp quyền cho user mới...${RESET}"
+    sudo -u "$SYSTEM_PG_USER" psql -c "GRANT ALL PRIVILEGES ON DATABASE ${TARGET_DB} TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON SCHEMA public TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${TARGET_USER};"
+    sudo -u "$SYSTEM_PG_USER" psql -c "GRANT CREATE ON DATABASE ${TARGET_DB} TO ${TARGET_USER};"
+    log "Cấp quyền cho user ${TARGET_USER} trên database ${TARGET_DB}"
+    echo -e "${GREEN}✔ Đã cấp quyền${RESET}"
+    ((STEP++))
+    
+    echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Cấu hình remote access...${RESET}"
+    enable_remote_for_user "$TARGET_USER"
+    open_ufw_5432_if_needed
+    ((STEP++))
+  fi
+  
+  echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Lấy thông tin database mới...${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql -c "
+    SELECT 
+      datname AS database,
+      pg_catalog.pg_get_userbyid(datdba) AS owner,
+      pg_size_pretty(pg_database_size(datname)) AS size
+    FROM pg_database 
+    WHERE datname='${TARGET_DB}';
+  "
+  
+  echo ""
+  echo -e "${GREEN}🎉 HOÀN TẤT CLONE DATABASE${RESET}"
+  echo "Database nguồn: $SOURCE_DB"
+  echo "Database mới   : $TARGET_DB"
+  echo "Owner          : $TARGET_USER"
+  
+  if [[ "$CREATE_NEW_USER" == true ]]; then
+    echo ""
+    echo -e "${CYAN}📝 Thông tin kết nối:${RESET}"
+    echo "Host     : <server_ip>"
+    echo "Port     : 5432"
+    echo "Database : $TARGET_DB"
+    echo "User     : $TARGET_USER"
+    echo "Password : **** (đã nhập)"
+  fi
+}
+
+########################################
 # CHỨC NĂNG: LIỆT KÊ USER & DB
 ########################################
 
@@ -579,14 +783,15 @@ main_menu() {
     echo "1) Tạo user + database"
     echo "2) Xoá user + database"
     echo "3) Liệt kê user & database"
-    echo "4) Thoát"
-    echo "5) Backup DB → B2 (pg_dump + rclone)"
-    echo "6) Cấu hình RCLONE_REMOTE (B2)"
-    echo "7) Kiểm tra RCLONE_REMOTE hiện tại"
-    echo "8) Thiết lập cron backup tự động"
-    echo "9) Xem cron backup hiện tại"
-    echo "10) Tắt cron backup (xoá các dòng pg_backup_b2.sh)"
-    read -rp "👉 Chọn (1-10): " CHOICE
+    echo "4) Clone database"
+    echo "5) Thoát"
+    echo "6) Backup DB → B2 (pg_dump + rclone)"
+    echo "7) Cấu hình RCLONE_REMOTE (B2)"
+    echo "8) Kiểm tra RCLONE_REMOTE hiện tại"
+    echo "9) Thiết lập cron backup tự động"
+    echo "10) Xem cron backup hiện tại"
+    echo "11) Tắt cron backup (xoá các dòng pg_backup_b2.sh)"
+    read -rp "👉 Chọn (1-11): " CHOICE
 
     case "$CHOICE" in
       1)
@@ -602,30 +807,34 @@ main_menu() {
         pause
         ;;
       4)
+        clone_database
+        pause
+        ;;
+      5)
         echo -e "${GREEN}Tạm biệt!${RESET}"
         exit 0
         ;;
-      5)
+      6)
         backup_to_b2_menu
         pause
         ;;
-      6)
+      7)
         setup_rclone_remote
         pause
         ;;
-      7)
+      8)
         check_current_remote
         pause
         ;;
-      8)
+      9)
         setup_backup_cron
         pause
         ;;
-      9)
+      10)
         show_backup_cron
         pause
         ;;
-      10)
+      11)
         disable_backup_cron
         pause
         ;;
