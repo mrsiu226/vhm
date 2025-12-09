@@ -6,7 +6,7 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.2.4"
+VHM_VERSION="1.2.5"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
@@ -498,9 +498,27 @@ clone_database() {
   fi
   ((STEP++))
   
-  # Cấp quyền nếu tạo user mới
-  if [[ "$CREATE_NEW_USER" == true ]]; then
-    echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Cấp quyền cho user mới...${RESET}"
+  # Cấp quyền cho user (cả user mới lẫn user hiện có)
+  if [[ "$CREATE_NEW_USER" == true ]] || [[ "$TARGET_USER" != "$SYSTEM_PG_USER" ]]; then
+    echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Chuyển ownership và cấp quyền cho user...${RESET}"
+    
+    # Chuyển ownership của tất cả tables sang user mới
+    echo -e "${BLUE}  → Chuyển ownership của tables...${RESET}"
+    for tbl in $(sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public';"); do
+      sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER TABLE public.${tbl} OWNER TO ${TARGET_USER};" 2>/dev/null || true
+    done
+    
+    # Chuyển ownership của tất cả sequences sang user mới
+    echo -e "${BLUE}  → Chuyển ownership của sequences...${RESET}"
+    for seq in $(sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -tAc "SELECT sequencename FROM pg_sequences WHERE schemaname='public';"); do
+      sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER SEQUENCE public.${seq} OWNER TO ${TARGET_USER};" 2>/dev/null || true
+    done
+    
+    # Chuyển ownership của views (nếu có)
+    echo -e "${BLUE}  → Chuyển ownership của views...${RESET}"
+    for view in $(sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -tAc "SELECT viewname FROM pg_views WHERE schemaname='public';"); do
+      sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER VIEW public.${view} OWNER TO ${TARGET_USER};" 2>/dev/null || true
+    done
     
     # Quyền database
     sudo -u "$SYSTEM_PG_USER" psql -c "GRANT ALL PRIVILEGES ON DATABASE ${TARGET_DB} TO ${TARGET_USER};"
@@ -510,7 +528,7 @@ clone_database() {
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON SCHEMA public TO ${TARGET_USER};"
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT USAGE ON SCHEMA public TO ${TARGET_USER};"
     
-    # Quyền cho các objects ĐÃ TỒN TẠI (tables, sequences, functions)
+    # Quyền cho các objects ĐÃ TỒN TẠI
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL TABLES IN SCHEMA public TO ${TARGET_USER};"
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ${TARGET_USER};"
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO ${TARGET_USER};"
@@ -520,14 +538,16 @@ clone_database() {
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${TARGET_USER};"
     sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO ${TARGET_USER};"
     
-    log "Cấp quyền đầy đủ cho user ${TARGET_USER} trên database ${TARGET_DB}"
-    echo -e "${GREEN}✔ Đã cấp quyền cho tất cả objects${RESET}"
+    log "Chuyển ownership và cấp quyền đầy đủ cho user ${TARGET_USER} trên database ${TARGET_DB}"
+    echo -e "${GREEN}✔ Đã chuyển ownership và cấp quyền cho tất cả objects${RESET}"
     ((STEP++))
     
-    echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Cấu hình remote access...${RESET}"
-    enable_remote_for_user "$TARGET_USER"
-    open_ufw_5432_if_needed
-    ((STEP++))
+    if [[ "$CREATE_NEW_USER" == true ]]; then
+      echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Cấu hình remote access...${RESET}"
+      enable_remote_for_user "$TARGET_USER"
+      open_ufw_5432_if_needed
+      ((STEP++))
+    fi
   fi
   
   echo -e "${BLUE}[${STEP}/${TOTAL_STEPS}] Lấy thông tin database mới...${RESET}"
