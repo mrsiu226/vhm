@@ -6,7 +6,7 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.2.5"
+VHM_VERSION="1.2.6"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
@@ -849,8 +849,9 @@ main_menu() {
     echo "8) Thiết lập cron backup tự động"
     echo "9) Xem cron backup hiện tại"
     echo "10) Tắt cron backup (xoá các dòng pg_backup_b2.sh)"
-    echo "11) Thoát"
-    read -rp "👉 Chọn (1-11): " CHOICE
+    echo "11) Cập nhật VHM (update)"
+    echo "12) Thoát"
+    read -rp "👉 Chọn (1-12): " CHOICE
 
     case "$CHOICE" in
       1)
@@ -894,6 +895,9 @@ main_menu() {
         pause
         ;;
       11)
+        self_update
+        ;;
+      12)
         echo -e "${GREEN}Tạm biệt!${RESET}"
         exit 0
         ;;
