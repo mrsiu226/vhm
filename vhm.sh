@@ -6,13 +6,14 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.2.6"
+VHM_VERSION="1.3.0"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
 
 SYSTEM_PG_USER="postgres"
-LOG_FILE="/var/log/pg_ultra_tool.log"
+MONGO_ADMIN_USER="admin"
+LOG_FILE="/var/log/vhm_tool.log"
 
 ########################################
 # MÀU
@@ -42,12 +43,12 @@ require_root() {
 
 header() {
   echo -e "${CYAN}"
-  echo "=============================================="
-  echo "   🔥 VHM — POSTGRESQL ULTRA TOOL (v${VHM_VERSION})"
-  echo "=============================================="
-  echo "   Hỗ trợ tạo/xoá user và database PostgreSQL"
+  echo "========================================================"
+  echo "   🔥 VHM — DATABASE MANAGEMENT TOOL (v${VHM_VERSION})"
+  echo "========================================================"
+  echo "   Hỗ trợ quản lý PostgreSQL & MongoDB"
   echo "   Tác giả: MrSiu"
-  echo "=============================================="
+  echo "========================================================"
   echo -e "${RESET}"
 }
 
@@ -608,6 +609,410 @@ list_users_and_dbs() {
 }
 
 ########################################
+# MONGODB FUNCTIONS
+########################################
+
+# Kiểm tra MongoDB có được cài đặt không
+check_mongodb() {
+  if ! command -v mongosh >/dev/null 2>&1 && ! command -v mongo >/dev/null 2>&1; then
+    echo -e "${RED}❌ MongoDB chưa được cài đặt hoặc mongosh/mongo không có trong PATH.${RESET}"
+    echo "   Cài đặt: apt install mongodb-mongosh -y"
+    return 1
+  fi
+  return 0
+}
+
+# Lấy MongoDB admin password
+get_mongo_admin_password() {
+  read -rsp "👉 Nhập password của user admin MongoDB: " MONGO_ADMIN_PASS
+  echo ""
+  export MONGO_ADMIN_PASS
+}
+
+# Kiểm tra kết nối MongoDB
+test_mongo_connection() {
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  if echo "db.version()" | $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+########################################
+# MONGODB: TẠO USER + DATABASE
+########################################
+
+mongo_create_user_and_db() {
+  echo -e "${BLUE}=== TẠO USER + DATABASE MONGODB ===${RESET}"
+  
+  check_mongodb || return
+  get_mongo_admin_password
+  
+  if ! test_mongo_connection; then
+    echo -e "${RED}❌ Không thể kết nối MongoDB với user admin. Kiểm tra lại password.${RESET}"
+    return
+  fi
+  
+  read -rp "👉 Nhập tên database MongoDB: " MONGO_DB
+  read -rp "👉 Nhập tên user MongoDB: " MONGO_USER
+  read -rsp "👉 Nhập password cho user (ẩn): " MONGO_PASS
+  echo ""
+  
+  echo -e "${YELLOW}Bạn đã nhập:${RESET}"
+  echo "Database : $MONGO_DB"
+  echo "User     : $MONGO_USER"
+  echo "Password : **** (ẩn)"
+  read -rp "👉 Xác nhận tạo? (y/n): " CONFIRM
+  [[ "$CONFIRM" == "y" ]] || { echo -e "${RED}❌ Hủy thao tác${RESET}"; return; }
+  
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  echo -e "${BLUE}[1/2] Tạo database và user...${RESET}"
+  
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet <<EOF
+use ${MONGO_DB}
+db.createUser({
+  user: "${MONGO_USER}",
+  pwd: "${MONGO_PASS}",
+  roles: [
+    { role: "dbOwner", db: "${MONGO_DB}" }
+  ]
+})
+EOF
+  
+  if [ $? -eq 0 ]; then
+    log "Tạo MongoDB user ${MONGO_USER} và database ${MONGO_DB}"
+    echo -e "${GREEN}✔ Đã tạo database và user${RESET}"
+  else
+    echo -e "${RED}❌ Tạo thất bại${RESET}"
+    return
+  fi
+  
+  echo -e "${BLUE}[2/2] Test kết nối...${RESET}"
+  if echo "db.stats()" | $MONGO_CMD "mongodb://${MONGO_USER}:${MONGO_PASS}@localhost:27017/${MONGO_DB}?authSource=${MONGO_DB}" --quiet >/dev/null 2>&1; then
+    log "Test kết nối OK cho MongoDB user ${MONGO_USER} / db ${MONGO_DB}"
+    echo -e "${GREEN}✔ Test kết nối thành công${RESET}"
+  else
+    echo -e "${RED}❌ Test kết nối thất bại${RESET}"
+  fi
+  
+  echo -e "${GREEN}🎉 HOÀN TẤT TẠO USER + DB MONGODB${RESET}"
+  echo "Database : $MONGO_DB"
+  echo "User     : $MONGO_USER"
+  echo ""
+  echo -e "${CYAN}📝 Connection String:${RESET}"
+  echo "mongodb://${MONGO_USER}:${MONGO_PASS}@localhost:27017/${MONGO_DB}?authSource=${MONGO_DB}"
+}
+
+########################################
+# MONGODB: XÓA USER + DATABASE
+########################################
+
+mongo_delete_user_and_db() {
+  echo -e "${BLUE}=== XÓA USER + DATABASE MONGODB ===${RESET}"
+  
+  check_mongodb || return
+  get_mongo_admin_password
+  
+  if ! test_mongo_connection; then
+    echo -e "${RED}❌ Không thể kết nối MongoDB với user admin. Kiểm tra lại password.${RESET}"
+    return
+  fi
+  
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  # Hiển thị danh sách databases
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "db.adminCommand('listDatabases').databases.forEach(function(d) { if (d.name != 'admin' && d.name != 'config' && d.name != 'local') print('  - ' + d.name) })" 2>/dev/null
+  echo ""
+  
+  read -rp "👉 Nhập tên database cần xóa: " MONGO_DB
+  read -rp "👉 Nhập tên user cần xóa (có thể bỏ trống): " MONGO_USER
+  
+  echo ""
+  echo -e "${YELLOW}Bạn chuẩn bị XÓA:${RESET}"
+  echo "Database : $MONGO_DB"
+  [[ -n "$MONGO_USER" ]] && echo "User     : $MONGO_USER"
+  echo -e "${RED}⚠ Cảnh báo: thao tác không thể hoàn tác!${RESET}"
+  read -rp "👉 Gõ CHAPNHAN để xác nhận: " CONFIRM
+  [[ "$CONFIRM" == "CHAPNHAN" ]] || { echo -e "${RED}❌ Hủy thao tác xóa${RESET}"; return; }
+  
+  # Xóa user nếu có
+  if [[ -n "$MONGO_USER" ]]; then
+    echo -e "${BLUE}→ Xóa user ${MONGO_USER}...${RESET}"
+    $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "use ${MONGO_DB}; db.dropUser('${MONGO_USER}')" 2>/dev/null
+    log "DROP MongoDB user ${MONGO_USER}"
+    echo -e "${GREEN}✔ Đã xóa user${RESET}"
+  fi
+  
+  # Xóa database
+  echo -e "${BLUE}→ Xóa database ${MONGO_DB}...${RESET}"
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "use ${MONGO_DB}; db.dropDatabase()" 2>/dev/null
+  log "DROP MongoDB database ${MONGO_DB}"
+  echo -e "${GREEN}✔ Đã xóa database${RESET}"
+  
+  echo -e "${GREEN}🎉 HOÀN TẤT XÓA DATABASE MONGODB${RESET}"
+}
+
+########################################
+# MONGODB: LIỆT KÊ DATABASES
+########################################
+
+mongo_list_dbs() {
+  echo -e "${BLUE}=== DANH SÁCH MONGODB DATABASES ===${RESET}"
+  
+  check_mongodb || return
+  get_mongo_admin_password
+  
+  if ! test_mongo_connection; then
+    echo -e "${RED}❌ Không thể kết nối MongoDB với user admin. Kiểm tra lại password.${RESET}"
+    return
+  fi
+  
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  echo ""
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet <<'EOF'
+db.adminCommand('listDatabases').databases.forEach(function(d) {
+  print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  print('Database: ' + d.name);
+  print('Size: ' + (d.sizeOnDisk / 1024 / 1024).toFixed(2) + ' MB');
+  
+  var currentDb = db.getSiblingDB(d.name);
+  try {
+    var users = currentDb.getUsers();
+    if (users.users && users.users.length > 0) {
+      print('Users:');
+      users.users.forEach(function(u) {
+        print('  - ' + u.user + ' (roles: ' + u.roles.map(r => r.role).join(', ') + ')');
+      });
+    }
+  } catch(e) {}
+});
+print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+EOF
+}
+
+########################################
+# MONGODB: CLONE DATABASE
+########################################
+
+mongo_clone_database() {
+  echo -e "${BLUE}=== CLONE MONGODB DATABASE ===${RESET}"
+  
+  check_mongodb || return
+  get_mongo_admin_password
+  
+  if ! test_mongo_connection; then
+    echo -e "${RED}❌ Không thể kết nối MongoDB với user admin. Kiểm tra lại password.${RESET}"
+    return
+  fi
+  
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  # Hiển thị danh sách databases
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "db.adminCommand('listDatabases').databases.forEach(function(d) { if (d.name != 'admin' && d.name != 'config' && d.name != 'local') print('  - ' + d.name) })" 2>/dev/null
+  echo ""
+  
+  read -rp "👉 Nhập tên database nguồn: " SOURCE_DB
+  read -rp "👉 Nhập tên database đích (mới): " TARGET_DB
+  
+  if [[ -z "$SOURCE_DB" || -z "$TARGET_DB" ]]; then
+    echo -e "${RED}❌ Tên database không được để trống.${RESET}"
+    return
+  fi
+  
+  echo ""
+  echo -e "${YELLOW}=== TẠO USER CHO DATABASE MỚI ===${RESET}"
+  echo "1) Tạo user mới"
+  echo "2) Không tạo user (chỉ clone data)"
+  read -rp "👉 Chọn (1-2): " USER_CHOICE
+  
+  local CREATE_USER=false
+  local NEW_USER=""
+  local NEW_PASS=""
+  
+  if [[ "$USER_CHOICE" == "1" ]]; then
+    read -rp "👉 Nhập tên user mới: " NEW_USER
+    read -rsp "👉 Nhập password: " NEW_PASS
+    echo ""
+    CREATE_USER=true
+  fi
+  
+  echo ""
+  echo -e "${YELLOW}Chuẩn bị clone:${RESET}"
+  echo "  Database nguồn: $SOURCE_DB"
+  echo "  Database đích: $TARGET_DB"
+  [[ "$CREATE_USER" == true ]] && echo "  User mới: $NEW_USER"
+  read -rp "👉 Xác nhận clone? (y/n): " CONFIRM
+  [[ "$CONFIRM" == "y" ]] || { echo -e "${RED}❌ Hủy thao tác${RESET}"; return; }
+  
+  echo -e "${BLUE}[1/3] Clone database bằng mongodump...${RESET}"
+  
+  # Tạo thư mục tạm
+  local TEMP_DIR="/tmp/mongo_clone_$$"
+  mkdir -p "$TEMP_DIR"
+  
+  # Dump database nguồn
+  mongodump --uri="mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/${SOURCE_DB}?authSource=admin" --out="$TEMP_DIR" --quiet
+  
+  if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Dump database thất bại${RESET}"
+    rm -rf "$TEMP_DIR"
+    return
+  fi
+  
+  echo -e "${GREEN}✔ Dump thành công${RESET}"
+  
+  echo -e "${BLUE}[2/3] Restore vào database mới...${RESET}"
+  
+  # Restore vào database mới
+  mongorestore --uri="mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/${TARGET_DB}?authSource=admin" --nsFrom="${SOURCE_DB}.*" --nsTo="${TARGET_DB}.*" "$TEMP_DIR/${SOURCE_DB}" --quiet
+  
+  if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Restore database thất bại${RESET}"
+    rm -rf "$TEMP_DIR"
+    return
+  fi
+  
+  echo -e "${GREEN}✔ Restore thành công${RESET}"
+  
+  # Xóa thư mục tạm
+  rm -rf "$TEMP_DIR"
+  
+  # Tạo user nếu cần
+  if [[ "$CREATE_USER" == true ]]; then
+    echo -e "${BLUE}[3/3] Tạo user mới...${RESET}"
+    
+    $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet <<EOF
+use ${TARGET_DB}
+db.createUser({
+  user: "${NEW_USER}",
+  pwd: "${NEW_PASS}",
+  roles: [
+    { role: "dbOwner", db: "${TARGET_DB}" }
+  ]
+})
+EOF
+    
+    if [ $? -eq 0 ]; then
+      echo -e "${GREEN}✔ Đã tạo user${RESET}"
+      log "Clone MongoDB database ${SOURCE_DB} -> ${TARGET_DB} với user ${NEW_USER}"
+    else
+      echo -e "${YELLOW}⚠ Tạo user thất bại nhưng database đã được clone${RESET}"
+    fi
+  else
+    log "Clone MongoDB database ${SOURCE_DB} -> ${TARGET_DB}"
+  fi
+  
+  echo ""
+  echo -e "${GREEN}🎉 HOÀN TẤT CLONE DATABASE MONGODB${RESET}"
+  echo "Database nguồn: $SOURCE_DB"
+  echo "Database mới: $TARGET_DB"
+  
+  if [[ "$CREATE_USER" == true ]]; then
+    echo ""
+    echo -e "${CYAN}📝 Connection String:${RESET}"
+    echo "mongodb://${NEW_USER}:${NEW_PASS}@localhost:27017/${TARGET_DB}?authSource=${TARGET_DB}"
+  fi
+}
+
+########################################
+# MONGODB: BACKUP DATABASE
+########################################
+
+mongo_backup_database() {
+  echo -e "${BLUE}=== BACKUP MONGODB DATABASE ===${RESET}"
+  
+  check_mongodb || return
+  get_mongo_admin_password
+  
+  if ! test_mongo_connection; then
+    echo -e "${RED}❌ Không thể kết nối MongoDB với user admin. Kiểm tra lại password.${RESET}"
+    return
+  fi
+  
+  local BACKUP_DIR="/opt/mongo_backups"
+  mkdir -p "$BACKUP_DIR"
+  
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  # Hiển thị danh sách databases
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "db.adminCommand('listDatabases').databases.forEach(function(d) { if (d.name != 'admin' && d.name != 'config' && d.name != 'local') print('  - ' + d.name) })" 2>/dev/null
+  echo ""
+  
+  read -rp "👉 Nhập tên database cần backup (bỏ trống = backup tất cả): " MONGO_DB
+  
+  local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  
+  if [[ -n "$MONGO_DB" ]]; then
+    local BACKUP_PATH="${BACKUP_DIR}/${MONGO_DB}_${TIMESTAMP}"
+    echo -e "${BLUE}→ Đang backup database ${MONGO_DB}...${RESET}"
+    
+    mongodump --uri="mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/${MONGO_DB}?authSource=admin" --out="$BACKUP_PATH"
+    
+    if [ $? -eq 0 ]; then
+      echo -e "${GREEN}✔ Backup thành công${RESET}"
+      log "Backup MongoDB database ${MONGO_DB} to ${BACKUP_PATH}"
+      
+      # Nén backup
+      echo -e "${BLUE}→ Đang nén backup...${RESET}"
+      cd "$BACKUP_DIR"
+      tar -czf "${MONGO_DB}_${TIMESTAMP}.tar.gz" "$(basename "$BACKUP_PATH")"
+      rm -rf "$BACKUP_PATH"
+      
+      echo -e "${GREEN}✔ Đã nén backup${RESET}"
+      echo -e "${GREEN}📦 File backup: ${BACKUP_DIR}/${MONGO_DB}_${TIMESTAMP}.tar.gz${RESET}"
+    else
+      echo -e "${RED}❌ Backup thất bại${RESET}"
+    fi
+  else
+    local BACKUP_PATH="${BACKUP_DIR}/all_dbs_${TIMESTAMP}"
+    echo -e "${BLUE}→ Đang backup tất cả databases...${RESET}"
+    
+    mongodump --uri="mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/?authSource=admin" --out="$BACKUP_PATH"
+    
+    if [ $? -eq 0 ]; then
+      echo -e "${GREEN}✔ Backup thành công${RESET}"
+      log "Backup all MongoDB databases to ${BACKUP_PATH}"
+      
+      # Nén backup
+      echo -e "${BLUE}→ Đang nén backup...${RESET}"
+      cd "$BACKUP_DIR"
+      tar -czf "all_dbs_${TIMESTAMP}.tar.gz" "$(basename "$BACKUP_PATH")"
+      rm -rf "$BACKUP_PATH"
+      
+      echo -e "${GREEN}✔ Đã nén backup${RESET}"
+      echo -e "${GREEN}📦 File backup: ${BACKUP_DIR}/all_dbs_${TIMESTAMP}.tar.gz${RESET}"
+    else
+      echo -e "${RED}❌ Backup thất bại${RESET}"
+    fi
+  fi
+}
+
+########################################
 # BACKUP → B2 (gọi pg_backup_b2.sh)
 ########################################
 
@@ -827,18 +1232,13 @@ disable_backup_cron() {
 }
 
 ########################################
-# MENU CHÍNH
+# POSTGRESQL MENU
 ########################################
 
-main_menu() {
-  require_root
-  header
-  check_for_update_hint
-  echo "Log file: $LOG_FILE"
-  echo ""
-
+postgresql_menu() {
   while true; do
-    echo -e "${CYAN}===== MENU VHM =====${RESET}"
+    echo ""
+    echo -e "${CYAN}===== MENU POSTGRESQL =====${RESET}"
     echo "1) Tạo user + database"
     echo "2) Xoá user + database"
     echo "3) Liệt kê user & database"
@@ -848,10 +1248,9 @@ main_menu() {
     echo "7) Kiểm tra RCLONE_REMOTE hiện tại"
     echo "8) Thiết lập cron backup tự động"
     echo "9) Xem cron backup hiện tại"
-    echo "10) Tắt cron backup (xoá các dòng pg_backup_b2.sh)"
-    echo "11) Cập nhật VHM (update)"
-    echo "12) Thoát"
-    read -rp "👉 Chọn (1-12): " CHOICE
+    echo "10) Tắt cron backup"
+    echo "0) Quay lại menu chính"
+    read -rp "👉 Chọn (0-10): " CHOICE
 
     case "$CHOICE" in
       1)
@@ -894,10 +1293,93 @@ main_menu() {
         disable_backup_cron
         pause
         ;;
-      11)
+      0)
+        return
+        ;;
+      *)
+        echo -e "${RED}❌ Lựa chọn không hợp lệ${RESET}"
+        ;;
+    esac
+  done
+}
+
+########################################
+# MONGODB MENU
+########################################
+
+mongodb_menu() {
+  while true; do
+    echo ""
+    echo -e "${CYAN}===== MENU MONGODB =====${RESET}"
+    echo "1) Tạo user + database"
+    echo "2) Xoá user + database"
+    echo "3) Liệt kê databases"
+    echo "4) Clone database"
+    echo "5) Backup database"
+    echo "0) Quay lại menu chính"
+    read -rp "👉 Chọn (0-5): " CHOICE
+
+    case "$CHOICE" in
+      1)
+        mongo_create_user_and_db
+        pause
+        ;;
+      2)
+        mongo_delete_user_and_db
+        pause
+        ;;
+      3)
+        mongo_list_dbs
+        pause
+        ;;
+      4)
+        mongo_clone_database
+        pause
+        ;;
+      5)
+        mongo_backup_database
+        pause
+        ;;
+      0)
+        return
+        ;;
+      *)
+        echo -e "${RED}❌ Lựa chọn không hợp lệ${RESET}"
+        ;;
+    esac
+  done
+}
+
+########################################
+# MENU CHÍNH
+########################################
+
+main_menu() {
+  require_root
+  header
+  check_for_update_hint
+  echo "Log file: $LOG_FILE"
+  echo ""
+
+  while true; do
+    echo -e "${CYAN}===== MENU CHÍNH VHM =====${RESET}"
+    echo "1) 🐘 Quản lý PostgreSQL"
+    echo "2) 🍃 Quản lý MongoDB"
+    echo "3) 🔄 Cập nhật VHM"
+    echo "4) ❌ Thoát"
+    read -rp "👉 Chọn (1-4): " CHOICE
+
+    case "$CHOICE" in
+      1)
+        postgresql_menu
+        ;;
+      2)
+        mongodb_menu
+        ;;
+      3)
         self_update
         ;;
-      12)
+      4)
         echo -e "${GREEN}Tạm biệt!${RESET}"
         exit 0
         ;;
