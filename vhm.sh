@@ -6,7 +6,7 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.3.1"
+VHM_VERSION="1.3.2"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
@@ -612,6 +612,8 @@ list_users_and_dbs() {
 # MONGODB FUNCTIONS
 ########################################
 
+MONGO_CONFIG_FILE="/etc/vhm-mongo.conf"
+
 # Kiểm tra MongoDB có được cài đặt không
 check_mongodb() {
   if ! command -v mongosh >/dev/null 2>&1 && ! command -v mongo >/dev/null 2>&1; then
@@ -622,11 +624,51 @@ check_mongodb() {
   return 0
 }
 
+# Lưu MongoDB admin password
+save_mongo_password() {
+  local PASS="$1"
+  echo "MONGO_ADMIN_PASS=\"${PASS}\"" | sudo tee "$MONGO_CONFIG_FILE" >/dev/null
+  sudo chmod 600 "$MONGO_CONFIG_FILE"
+  log "Đã lưu MongoDB admin password vào ${MONGO_CONFIG_FILE}"
+}
+
+# Load MongoDB admin password từ file
+load_mongo_password() {
+  if [[ -f "$MONGO_CONFIG_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$MONGO_CONFIG_FILE"
+    if [[ -n "${MONGO_ADMIN_PASS:-}" ]]; then
+      export MONGO_ADMIN_PASS
+      return 0
+    fi
+  fi
+  return 1
+}
+
 # Lấy MongoDB admin password
 get_mongo_admin_password() {
+  # Thử load password đã lưu
+  if load_mongo_password; then
+    echo -e "${GREEN}✔ Đã load password từ file cấu hình${RESET}"
+    read -rp "👉 Sử dụng password đã lưu? (y/n, Enter=y): " USE_SAVED
+    USE_SAVED=${USE_SAVED:-y}
+    
+    if [[ "$USE_SAVED" == "y" ]]; then
+      return 0
+    fi
+  fi
+  
+  # Nhập password mới
   read -rsp "👉 Nhập password của user admin MongoDB: " MONGO_ADMIN_PASS
   echo ""
   export MONGO_ADMIN_PASS
+  
+  # Hỏi có muốn lưu không
+  read -rp "👉 Lưu password này để lần sau không phải nhập lại? (y/n): " SAVE_PASS
+  if [[ "$SAVE_PASS" == "y" ]]; then
+    save_mongo_password "$MONGO_ADMIN_PASS"
+    echo -e "${GREEN}✔ Đã lưu password vào ${MONGO_CONFIG_FILE}${RESET}"
+  fi
 }
 
 # Kiểm tra kết nối MongoDB
@@ -1308,6 +1350,30 @@ postgresql_menu() {
 }
 
 ########################################
+# MONGODB: XÓA PASSWORD ĐÃ LƯU
+########################################
+
+mongo_clear_saved_password() {
+  echo -e "${BLUE}=== XÓA PASSWORD ĐÃ LƯU ===${RESET}"
+  
+  if [[ ! -f "$MONGO_CONFIG_FILE" ]]; then
+    echo -e "${YELLOW}⚠ Chưa có password nào được lưu.${RESET}"
+    return
+  fi
+  
+  echo -e "${YELLOW}File cấu hình: ${MONGO_CONFIG_FILE}${RESET}"
+  read -rp "👉 Xác nhận xóa password đã lưu? (y/n): " CONFIRM
+  
+  if [[ "$CONFIRM" == "y" ]]; then
+    sudo rm -f "$MONGO_CONFIG_FILE"
+    echo -e "${GREEN}✔ Đã xóa password đã lưu${RESET}"
+    log "Xóa MongoDB password đã lưu"
+  else
+    echo -e "${RED}❌ Hủy thao tác${RESET}"
+  fi
+}
+
+########################################
 # MONGODB MENU
 ########################################
 
@@ -1320,8 +1386,9 @@ mongodb_menu() {
     echo "3) Liệt kê databases"
     echo "4) Clone database"
     echo "5) Backup database"
+    echo "6) Xóa password admin đã lưu"
     echo "0) Quay lại menu chính"
-    read -rp "👉 Chọn (0-5): " CHOICE
+    read -rp "👉 Chọn (0-6): " CHOICE
 
     case "$CHOICE" in
       1)
@@ -1342,6 +1409,10 @@ mongodb_menu() {
         ;;
       5)
         mongo_backup_database
+        pause
+        ;;
+      6)
+        mongo_clear_saved_password
         pause
         ;;
       0)
