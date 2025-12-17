@@ -6,7 +6,7 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.3.0"
+VHM_VERSION="1.3.1"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
@@ -786,25 +786,29 @@ mongo_list_dbs() {
   fi
   
   echo ""
-  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet <<'EOF'
-db.adminCommand('listDatabases').databases.forEach(function(d) {
-  print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  print('Database: ' + d.name);
-  print('Size: ' + (d.sizeOnDisk / 1024 / 1024).toFixed(2) + ' MB');
+  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   
-  var currentDb = db.getSiblingDB(d.name);
-  try {
-    var users = currentDb.getUsers();
-    if (users.users && users.users.length > 0) {
-      print('Users:');
-      users.users.forEach(function(u) {
-        print('  - ' + u.user + ' (roles: ' + u.roles.map(r => r.role).join(', ') + ')');
-      });
-    }
-  } catch(e) {}
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --norc 2>/dev/null <<'EOF' | grep -v "^admin>" | grep -v "^\.\.\."
+db.adminCommand('listDatabases').databases.forEach(function(d) {
+  if (d.name != 'config' && d.name != 'local') {
+    print('Database: \x1b[33m' + d.name + '\x1b[0m');
+    print('Size    : ' + (d.sizeOnDisk / 1024 / 1024).toFixed(2) + ' MB');
+    
+    var currentDb = db.getSiblingDB(d.name);
+    try {
+      var users = currentDb.getUsers();
+      if (users.users && users.users.length > 0) {
+        users.users.forEach(function(u) {
+          print('User    : ' + u.user + ' (roles: ' + u.roles.map(r => r.role).join(', ') + ')');
+        });
+      }
+    } catch(e) {}
+    print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  }
 });
-print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 EOF
+
+  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
 ########################################
