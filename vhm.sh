@@ -6,7 +6,7 @@ cd /  # tránh warning could not change directory to /root
 # CẤU HÌNH CƠ BẢN
 ########################################
 
-VHM_VERSION="1.3.2"
+VHM_VERSION="1.3.3"
 
 REPO_PATH="mrsiu226/vhm"
 REPO_BASE="https://raw.githubusercontent.com/${REPO_PATH}/main"
@@ -1059,6 +1059,513 @@ mongo_backup_database() {
 }
 
 ########################################
+# MONGODB: EXPORT DATABASE
+########################################
+
+mongo_export_database() {
+  echo -e "${BLUE}=== EXPORT MONGODB DATABASE ===${RESET}"
+  
+  check_mongodb || return
+  get_mongo_admin_password
+  
+  if ! test_mongo_connection; then
+    echo -e "${RED}❌ Không thể kết nối MongoDB với user admin. Kiểm tra lại password.${RESET}"
+    return
+  fi
+  
+  local EXPORT_DIR="/opt/mongo_exports"
+  mkdir -p "$EXPORT_DIR"
+  
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  # Hiển thị danh sách databases
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "db.adminCommand('listDatabases').databases.forEach(function(d) { if (d.name != 'admin' && d.name != 'config' && d.name != 'local') print('  - ' + d.name + ' (' + (d.sizeOnDisk / 1024 / 1024).toFixed(2) + ' MB)') })" 2>/dev/null
+  echo ""
+  
+  read -rp "👉 Nhập tên database cần export: " MONGO_DB
+  
+  if [[ -z "$MONGO_DB" ]]; then
+    echo -e "${RED}❌ Tên database không được để trống.${RESET}"
+    return
+  fi
+  
+  local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  local DUMP_DIR="/tmp/mongo_export_$$"
+  local EXPORT_FILE="${EXPORT_DIR}/${MONGO_DB}_${TIMESTAMP}.tar.gz"
+  
+  mkdir -p "$DUMP_DIR"
+  
+  echo -e "${BLUE}[1/2] Đang dump database ${MONGO_DB}...${RESET}"
+  
+  if mongodump --uri="mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/${MONGO_DB}?authSource=admin" --out="$DUMP_DIR" --quiet; then
+    echo -e "${GREEN}✔ Dump thành công${RESET}"
+  else
+    echo -e "${RED}❌ Dump database thất bại${RESET}"
+    rm -rf "$DUMP_DIR"
+    return
+  fi
+  
+  echo -e "${BLUE}[2/2] Đang nén file export...${RESET}"
+  cd "$DUMP_DIR"
+  tar -czf "$EXPORT_FILE" "$MONGO_DB"
+  rm -rf "$DUMP_DIR"
+  
+  local FILE_SIZE
+  FILE_SIZE=$(du -h "$EXPORT_FILE" | cut -f1)
+  
+  log "Export MongoDB database ${MONGO_DB} to ${EXPORT_FILE}"
+  
+  echo ""
+  echo -e "${GREEN}🎉 HOÀN TẤT EXPORT${RESET}"
+  echo -e "📦 File : ${CYAN}${EXPORT_FILE}${RESET}"
+  echo -e "📏 Size : ${FILE_SIZE}"
+  echo ""
+  echo -e "${CYAN}💡 Để tải về máy local dùng:${RESET}"
+  echo "   scp root@<server_ip>:${EXPORT_FILE} ."
+}
+
+########################################
+# MONGODB: IMPORT DATABASE
+########################################
+
+mongo_import_database() {
+  echo -e "${BLUE}=== IMPORT MONGODB DATABASE ===${RESET}"
+  
+  check_mongodb || return
+  get_mongo_admin_password
+  
+  if ! test_mongo_connection; then
+    echo -e "${RED}❌ Không thể kết nối MongoDB với user admin. Kiểm tra lại password.${RESET}"
+    return
+  fi
+  
+  local MONGO_CMD="mongosh"
+  if ! command -v mongosh >/dev/null 2>&1; then
+    MONGO_CMD="mongo"
+  fi
+  
+  # Liệt kê các file export có sẵn
+  local EXPORT_DIR="/opt/mongo_exports"
+  if [[ -d "$EXPORT_DIR" ]] && ls "${EXPORT_DIR}"/*.tar.gz 2>/dev/null | head -1 > /dev/null 2>&1; then
+    echo -e "${YELLOW}Các file export có sẵn trong ${EXPORT_DIR}:${RESET}"
+    ls -lh "${EXPORT_DIR}"/*.tar.gz 2>/dev/null | awk '{print "  " $NF " (" $5 ")"}'
+    echo ""
+  fi
+  
+  read -rp "👉 Nhập đường dẫn đầy đủ file import (.tar.gz): " IMPORT_FILE
+  
+  if [[ -z "$IMPORT_FILE" ]]; then
+    echo -e "${RED}❌ Đường dẫn file không được để trống.${RESET}"
+    return
+  fi
+  
+  if [[ ! -f "$IMPORT_FILE" ]]; then
+    echo -e "${RED}❌ File '${IMPORT_FILE}' không tồn tại.${RESET}"
+    return
+  fi
+  
+  # Hiển thị databases hiện có
+  echo ""
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "db.adminCommand('listDatabases').databases.forEach(function(d) { if (d.name != 'admin' && d.name != 'config' && d.name != 'local') print('  - ' + d.name) })" 2>/dev/null
+  echo ""
+  
+  read -rp "👉 Nhập tên database đích (sẽ tạo mới nếu chưa có): " TARGET_DB
+  
+  if [[ -z "$TARGET_DB" ]]; then
+    echo -e "${RED}❌ Tên database không được để trống.${RESET}"
+    return
+  fi
+  
+  # Kiểm tra database đã tồn tại
+  local DB_EXISTS
+  DB_EXISTS=$($MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "db.adminCommand('listDatabases').databases.filter(function(d) { return d.name == '${TARGET_DB}' }).length" 2>/dev/null)
+  
+  local DROP_FIRST=false
+  if [[ "$DB_EXISTS" == "1" ]]; then
+    echo -e "${YELLOW}⚠ Database '${TARGET_DB}' đã tồn tại.${RESET}"
+    echo "1) Xóa database cũ trước rồi import"
+    echo "2) Import ghi đè (merge) vào database hiện có"
+    echo "3) Hủy"
+    read -rp "👉 Chọn (1-3): " OVERWRITE_CHOICE
+    
+    case "$OVERWRITE_CHOICE" in
+      1) DROP_FIRST=true ;;
+      2) ;;
+      3|*) echo -e "${RED}❌ Hủy thao tác${RESET}"; return ;;
+    esac
+  fi
+  
+  # Hỏi tạo user
+  echo ""
+  echo -e "${YELLOW}=== TẠO USER CHO DATABASE ===${RESET}"
+  echo "1) Tạo user mới"
+  echo "2) Không tạo user"
+  read -rp "👉 Chọn (1-2): " USER_CHOICE
+  
+  local CREATE_USER=false
+  local NEW_USER=""
+  local NEW_PASS=""
+  
+  if [[ "$USER_CHOICE" == "1" ]]; then
+    read -rp "👉 Nhập tên user mới: " NEW_USER
+    read -rsp "👉 Nhập password: " NEW_PASS
+    echo ""
+    CREATE_USER=true
+  fi
+  
+  echo ""
+  local FILE_SIZE
+  FILE_SIZE=$(du -h "$IMPORT_FILE" | cut -f1)
+  echo -e "${YELLOW}Chuẩn bị import:${RESET}"
+  echo "  File     : $IMPORT_FILE ($FILE_SIZE)"
+  echo "  Database : $TARGET_DB"
+  [[ "$DROP_FIRST" == true ]] && echo -e "  ${RED}⚠ Database cũ sẽ bị xóa trước!${RESET}"
+  [[ "$CREATE_USER" == true ]] && echo "  User mới : $NEW_USER"
+  read -rp "👉 Xác nhận import? (y/n): " CONFIRM
+  [[ "$CONFIRM" == "y" ]] || { echo -e "${RED}❌ Hủy thao tác${RESET}"; return; }
+  
+  # Drop database cũ nếu cần
+  if [[ "$DROP_FIRST" == true ]]; then
+    echo -e "${BLUE}→ Xóa database cũ...${RESET}"
+    $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet --eval "use ${TARGET_DB}; db.dropDatabase()" 2>/dev/null
+    echo -e "${GREEN}✔ Đã xóa database cũ${RESET}"
+  fi
+  
+  # Giải nén file
+  echo -e "${BLUE}[1/2] Đang giải nén file import...${RESET}"
+  local TEMP_DIR="/tmp/mongo_import_$$"
+  mkdir -p "$TEMP_DIR"
+  tar -xzf "$IMPORT_FILE" -C "$TEMP_DIR"
+  
+  # Tìm thư mục data (tên database gốc)
+  local SOURCE_DIR
+  SOURCE_DIR=$(ls -d "$TEMP_DIR"/*/ 2>/dev/null | head -1)
+  
+  if [[ -z "$SOURCE_DIR" ]]; then
+    echo -e "${RED}❌ Không tìm thấy dữ liệu trong file import.${RESET}"
+    rm -rf "$TEMP_DIR"
+    return
+  fi
+  
+  local SOURCE_DB_NAME
+  SOURCE_DB_NAME=$(basename "$SOURCE_DIR")
+  
+  echo -e "${BLUE}[2/2] Đang restore vào database ${TARGET_DB}...${RESET}"
+  
+  if mongorestore --uri="mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/${TARGET_DB}?authSource=admin" --nsFrom="${SOURCE_DB_NAME}.*" --nsTo="${TARGET_DB}.*" "$SOURCE_DIR" --quiet --drop; then
+    echo -e "${GREEN}✔ Import thành công${RESET}"
+    log "Import MongoDB database from ${IMPORT_FILE} to ${TARGET_DB}"
+  else
+    echo -e "${YELLOW}⚠ Import hoàn tất (có thể có warning)${RESET}"
+    log "Import MongoDB database from ${IMPORT_FILE} to ${TARGET_DB} (with warnings)"
+  fi
+  
+  # Xóa thư mục tạm
+  rm -rf "$TEMP_DIR"
+  
+  # Tạo user nếu cần
+  if [[ "$CREATE_USER" == true ]]; then
+    echo -e "${BLUE}→ Tạo user mới...${RESET}"
+    
+    $MONGO_CMD "mongodb://${MONGO_ADMIN_USER}:${MONGO_ADMIN_PASS}@localhost:27017/admin?authSource=admin" --quiet <<EOF
+use ${TARGET_DB}
+db.createUser({
+  user: "${NEW_USER}",
+  pwd: "${NEW_PASS}",
+  roles: [
+    { role: "dbOwner", db: "${TARGET_DB}" }
+  ]
+})
+EOF
+    
+    if [ $? -eq 0 ]; then
+      echo -e "${GREEN}✔ Đã tạo user${RESET}"
+    else
+      echo -e "${YELLOW}⚠ Tạo user thất bại nhưng dữ liệu đã được import${RESET}"
+    fi
+  fi
+  
+  echo ""
+  echo -e "${GREEN}🎉 HOÀN TẤT IMPORT DATABASE MONGODB${RESET}"
+  echo "Database : $TARGET_DB"
+  
+  if [[ "$CREATE_USER" == true ]]; then
+    echo ""
+    echo -e "${CYAN}📝 Connection String:${RESET}"
+    echo "mongodb://${NEW_USER}:${NEW_PASS}@localhost:27017/${TARGET_DB}?authSource=${TARGET_DB}"
+  fi
+}
+
+########################################
+# CHỨC NĂNG: EXPORT DATABASE (PostgreSQL)
+########################################
+
+pg_export_database() {
+  echo -e "${BLUE}=== EXPORT DATABASE PostgreSQL ===${RESET}"
+
+  local EXPORT_DIR="/opt/pg_exports"
+  mkdir -p "$EXPORT_DIR"
+
+  # Hiển thị danh sách databases
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql \
+    -P pager=off -P "format=aligned" -P "border=2" \
+    -c "
+      SELECT
+        d.datname AS database,
+        pg_catalog.pg_get_userbyid(d.datdba) AS owner,
+        pg_size_pretty(pg_database_size(d.datname)) AS size
+      FROM pg_database d
+      WHERE d.datistemplate = false
+      ORDER BY d.datname;
+    "
+  echo ""
+
+  read -rp "👉 Nhập tên database cần export: " PG_DB
+
+  if [[ -z "$PG_DB" ]]; then
+    echo -e "${RED}❌ Tên database không được để trống.${RESET}"
+    return
+  fi
+
+  # Kiểm tra database có tồn tại
+  local DB_EXISTS
+  DB_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_database WHERE datname='${PG_DB}'" || true)
+  if [[ -z "$DB_EXISTS" ]]; then
+    echo -e "${RED}❌ Database '${PG_DB}' không tồn tại.${RESET}"
+    return
+  fi
+
+  # Hỏi format export
+  echo ""
+  echo -e "${YELLOW}Chọn format export:${RESET}"
+  echo "1) SQL text (nén .sql.gz) — dễ đọc, tương thích cao"
+  echo "2) Custom format (.dump) — nhỏ hơn, hỗ trợ restore chọn lọc"
+  read -rp "👉 Chọn (1-2, mặc định 1): " FORMAT_CHOICE
+  FORMAT_CHOICE=${FORMAT_CHOICE:-1}
+
+  local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  local EXPORT_FILE
+
+  echo -e "${BLUE}→ Đang export database ${PG_DB}...${RESET}"
+
+  case "$FORMAT_CHOICE" in
+    2)
+      EXPORT_FILE="${EXPORT_DIR}/${PG_DB}_${TIMESTAMP}.dump"
+      if sudo -u "$SYSTEM_PG_USER" pg_dump -Fc "$PG_DB" -f "$EXPORT_FILE"; then
+        echo -e "${GREEN}✔ Export thành công (custom format)${RESET}"
+        log "Export PostgreSQL database ${PG_DB} to ${EXPORT_FILE}"
+      else
+        echo -e "${RED}❌ Export thất bại${RESET}"
+        return
+      fi
+      ;;
+    *)
+      EXPORT_FILE="${EXPORT_DIR}/${PG_DB}_${TIMESTAMP}.sql.gz"
+      if sudo -u "$SYSTEM_PG_USER" pg_dump "$PG_DB" | gzip > "$EXPORT_FILE"; then
+        echo -e "${GREEN}✔ Export thành công (SQL text nén)${RESET}"
+        log "Export PostgreSQL database ${PG_DB} to ${EXPORT_FILE}"
+      else
+        echo -e "${RED}❌ Export thất bại${RESET}"
+        rm -f "$EXPORT_FILE"
+        return
+      fi
+      ;;
+  esac
+
+  local FILE_SIZE
+  FILE_SIZE=$(du -h "$EXPORT_FILE" | cut -f1)
+
+  echo ""
+  echo -e "${GREEN}🎉 HOÀN TẤT EXPORT${RESET}"
+  echo -e "📦 File : ${CYAN}${EXPORT_FILE}${RESET}"
+  echo -e "📏 Size : ${FILE_SIZE}"
+  echo ""
+  echo -e "${CYAN}💡 Để tải về máy local dùng:${RESET}"
+  echo "   scp root@<server_ip>:${EXPORT_FILE} ."
+}
+
+########################################
+# CHỨC NĂNG: IMPORT DATABASE (PostgreSQL)
+########################################
+
+pg_import_database() {
+  echo -e "${BLUE}=== IMPORT DATABASE PostgreSQL ===${RESET}"
+
+  # Liệt kê các file export có sẵn
+  local EXPORT_DIR="/opt/pg_exports"
+  if [[ -d "$EXPORT_DIR" ]] && ls "${EXPORT_DIR}"/*.sql.gz "${EXPORT_DIR}"/*.dump 2>/dev/null | head -1 > /dev/null 2>&1; then
+    echo -e "${YELLOW}Các file export có sẵn trong ${EXPORT_DIR}:${RESET}"
+    ls -lh "${EXPORT_DIR}"/*.sql.gz "${EXPORT_DIR}"/*.dump 2>/dev/null | awk '{print "  " $NF " (" $5 ")"}'
+    echo ""
+  fi
+
+  read -rp "👉 Nhập đường dẫn đầy đủ file import (.sql.gz hoặc .dump): " IMPORT_FILE
+
+  if [[ -z "$IMPORT_FILE" ]]; then
+    echo -e "${RED}❌ Đường dẫn file không được để trống.${RESET}"
+    return
+  fi
+
+  if [[ ! -f "$IMPORT_FILE" ]]; then
+    echo -e "${RED}❌ File '${IMPORT_FILE}' không tồn tại.${RESET}"
+    return
+  fi
+
+  # Hiển thị danh sách databases hiện có
+  echo ""
+  echo -e "${YELLOW}Danh sách database hiện có:${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql -tAc "
+    SELECT datname FROM pg_database
+    WHERE datistemplate = false
+    ORDER BY datname;
+  " | while read -r db; do
+    echo "  - $db"
+  done
+  echo ""
+
+  echo -e "${YELLOW}=== CHỌN DATABASE ĐÍCH ===${RESET}"
+  echo "1) Import vào database đã tồn tại (sẽ xóa toàn bộ dữ liệu cũ trước)"
+  echo "2) Tạo database mới rồi import"
+  read -rp "👉 Chọn (1-2): " DB_CHOICE
+
+  local TARGET_DB
+  local TARGET_USER
+
+  case "$DB_CHOICE" in
+    1)
+      read -rp "👉 Nhập tên database đích: " TARGET_DB
+      if [[ -z "$TARGET_DB" ]]; then
+        echo -e "${RED}❌ Tên database không được để trống.${RESET}"
+        return
+      fi
+
+      local DB_EXISTS
+      DB_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_database WHERE datname='${TARGET_DB}'" || true)
+      if [[ -z "$DB_EXISTS" ]]; then
+        echo -e "${RED}❌ Database '${TARGET_DB}' không tồn tại.${RESET}"
+        return
+      fi
+
+      TARGET_USER=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname='${TARGET_DB}'" | xargs)
+      ;;
+    2)
+      read -rp "👉 Nhập tên database mới: " TARGET_DB
+      if [[ -z "$TARGET_DB" ]]; then
+        echo -e "${RED}❌ Tên database không được để trống.${RESET}"
+        return
+      fi
+
+      local DB_EXISTS
+      DB_EXISTS=$(sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT 1 FROM pg_database WHERE datname='${TARGET_DB}'" || true)
+      if [[ -n "$DB_EXISTS" ]]; then
+        echo -e "${RED}❌ Database '${TARGET_DB}' đã tồn tại. Vui lòng chọn tên khác.${RESET}"
+        return
+      fi
+
+      echo -e "${YELLOW}Chọn owner cho database mới:${RESET}"
+      sudo -u "$SYSTEM_PG_USER" psql -tAc "SELECT rolname FROM pg_roles WHERE rolcanlogin = true ORDER BY rolname;" | while read -r user; do
+        echo "  - $user"
+      done
+      read -rp "👉 Nhập tên owner (bỏ trống = postgres): " TARGET_USER
+      TARGET_USER=${TARGET_USER:-$SYSTEM_PG_USER}
+
+      echo -e "${BLUE}→ Đang tạo database ${TARGET_DB} (owner: ${TARGET_USER})...${RESET}"
+      sudo -u "$SYSTEM_PG_USER" psql -c "CREATE DATABASE ${TARGET_DB} OWNER ${TARGET_USER};"
+      echo -e "${GREEN}✔ Đã tạo database${RESET}"
+      ;;
+    *)
+      echo -e "${RED}❌ Lựa chọn không hợp lệ${RESET}"
+      return
+      ;;
+  esac
+
+  echo ""
+  local FILE_SIZE
+  FILE_SIZE=$(du -h "$IMPORT_FILE" | cut -f1)
+  echo -e "${YELLOW}Chuẩn bị import:${RESET}"
+  echo "  File     : $IMPORT_FILE ($FILE_SIZE)"
+  echo "  Database : $TARGET_DB"
+  if [[ "$DB_CHOICE" == "1" ]]; then
+    echo -e "  ${RED}⚠ Dữ liệu cũ trong database sẽ bị ghi đè!${RESET}"
+  fi
+  read -rp "👉 Xác nhận import? (y/n): " CONFIRM
+  [[ "$CONFIRM" == "y" ]] || { echo -e "${RED}❌ Hủy thao tác${RESET}"; return; }
+
+  # Ngắt kết nối tới database đích
+  echo -e "${BLUE}[1/2] Ngắt kết nối tới database...${RESET}"
+  sudo -u "$SYSTEM_PG_USER" psql -c "
+    SELECT pg_terminate_backend(pid)
+    FROM pg_stat_activity
+    WHERE datname='${TARGET_DB}' AND pid <> pg_backend_pid();
+  " > /dev/null 2>&1 || true
+
+  echo -e "${BLUE}[2/2] Đang import dữ liệu...${RESET}"
+
+  # Xác định loại file và import
+  if [[ "$IMPORT_FILE" == *.dump ]]; then
+    # Custom format — dùng pg_restore
+    if sudo -u "$SYSTEM_PG_USER" pg_restore --clean --if-exists -d "$TARGET_DB" "$IMPORT_FILE" 2>&1; then
+      echo -e "${GREEN}✔ Import thành công (custom format)${RESET}"
+      log "Import PostgreSQL database from ${IMPORT_FILE} to ${TARGET_DB}"
+    else
+      echo -e "${YELLOW}⚠ Import hoàn tất (có thể có warning nhưng dữ liệu đã được import)${RESET}"
+      log "Import PostgreSQL database from ${IMPORT_FILE} to ${TARGET_DB} (with warnings)"
+    fi
+  elif [[ "$IMPORT_FILE" == *.sql.gz ]]; then
+    # SQL text nén — giải nén + pipe vào psql
+    if gunzip -c "$IMPORT_FILE" | sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" > /dev/null 2>&1; then
+      echo -e "${GREEN}✔ Import thành công (SQL text)${RESET}"
+      log "Import PostgreSQL database from ${IMPORT_FILE} to ${TARGET_DB}"
+    else
+      echo -e "${YELLOW}⚠ Import hoàn tất (có thể có warning nhưng dữ liệu đã được import)${RESET}"
+      log "Import PostgreSQL database from ${IMPORT_FILE} to ${TARGET_DB} (with warnings)"
+    fi
+  elif [[ "$IMPORT_FILE" == *.sql ]]; then
+    # SQL text không nén
+    if sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -f "$IMPORT_FILE" > /dev/null 2>&1; then
+      echo -e "${GREEN}✔ Import thành công (SQL text)${RESET}"
+      log "Import PostgreSQL database from ${IMPORT_FILE} to ${TARGET_DB}"
+    else
+      echo -e "${YELLOW}⚠ Import hoàn tất (có thể có warning nhưng dữ liệu đã được import)${RESET}"
+      log "Import PostgreSQL database from ${IMPORT_FILE} to ${TARGET_DB} (with warnings)"
+    fi
+  else
+    echo -e "${RED}❌ Không nhận diện được format file. Hỗ trợ: .sql.gz, .dump, .sql${RESET}"
+    return
+  fi
+
+  # Cấp lại quyền nếu có owner
+  if [[ -n "${TARGET_USER:-}" && "$TARGET_USER" != "$SYSTEM_PG_USER" ]]; then
+    echo -e "${BLUE}→ Cấp lại quyền cho user ${TARGET_USER}...${RESET}"
+    sudo -u "$SYSTEM_PG_USER" psql -c "GRANT ALL PRIVILEGES ON DATABASE ${TARGET_DB} TO ${TARGET_USER};" 2>/dev/null || true
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON SCHEMA public TO ${TARGET_USER};" 2>/dev/null || true
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL TABLES IN SCHEMA public TO ${TARGET_USER};" 2>/dev/null || true
+    sudo -u "$SYSTEM_PG_USER" psql -d "$TARGET_DB" -c "GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ${TARGET_USER};" 2>/dev/null || true
+    echo -e "${GREEN}✔ Đã cấp lại quyền${RESET}"
+  fi
+
+  echo ""
+  echo -e "${GREEN}🎉 HOÀN TẤT IMPORT DATABASE${RESET}"
+  echo "Database : $TARGET_DB"
+
+  # Hiển thị thông tin database sau import
+  sudo -u "$SYSTEM_PG_USER" psql -c "
+    SELECT
+      datname AS database,
+      pg_catalog.pg_get_userbyid(datdba) AS owner,
+      pg_size_pretty(pg_database_size(datname)) AS size
+    FROM pg_database
+    WHERE datname='${TARGET_DB}';
+  "
+}
+
+########################################
 # BACKUP → B2 (gọi pg_backup_b2.sh)
 ########################################
 
@@ -1289,14 +1796,16 @@ postgresql_menu() {
     echo "2) Xoá user + database"
     echo "3) Liệt kê user & database"
     echo "4) Clone database"
-    echo "5) Backup DB → B2 (pg_dump + rclone)"
-    echo "6) Cấu hình RCLONE_REMOTE (B2)"
-    echo "7) Kiểm tra RCLONE_REMOTE hiện tại"
-    echo "8) Thiết lập cron backup tự động"
-    echo "9) Xem cron backup hiện tại"
-    echo "10) Tắt cron backup"
+    echo "5) 📤 Export database"
+    echo "6) 📥 Import database"
+    echo "7) Backup DB → B2 (pg_dump + rclone)"
+    echo "8) Cấu hình RCLONE_REMOTE (B2)"
+    echo "9) Kiểm tra RCLONE_REMOTE hiện tại"
+    echo "10) Thiết lập cron backup tự động"
+    echo "11) Xem cron backup hiện tại"
+    echo "12) Tắt cron backup"
     echo "0) Quay lại menu chính"
-    read -rp "👉 Chọn (0-10): " CHOICE
+    read -rp "👉 Chọn (0-12): " CHOICE
 
     case "$CHOICE" in
       1)
@@ -1316,26 +1825,34 @@ postgresql_menu() {
         pause
         ;;
       5)
-        backup_to_b2_menu
+        pg_export_database
         pause
         ;;
       6)
-        setup_rclone_remote
+        pg_import_database
         pause
         ;;
       7)
-        check_current_remote
+        backup_to_b2_menu
         pause
         ;;
       8)
-        setup_backup_cron
+        setup_rclone_remote
         pause
         ;;
       9)
-        show_backup_cron
+        check_current_remote
         pause
         ;;
       10)
+        setup_backup_cron
+        pause
+        ;;
+      11)
+        show_backup_cron
+        pause
+        ;;
+      12)
         disable_backup_cron
         pause
         ;;
@@ -1386,9 +1903,11 @@ mongodb_menu() {
     echo "3) Liệt kê databases"
     echo "4) Clone database"
     echo "5) Backup database"
-    echo "6) Xóa password admin đã lưu"
+    echo "6) 📤 Export database"
+    echo "7) 📥 Import database"
+    echo "8) Xóa password admin đã lưu"
     echo "0) Quay lại menu chính"
-    read -rp "👉 Chọn (0-6): " CHOICE
+    read -rp "👉 Chọn (0-8): " CHOICE
 
     case "$CHOICE" in
       1)
@@ -1412,6 +1931,14 @@ mongodb_menu() {
         pause
         ;;
       6)
+        mongo_export_database
+        pause
+        ;;
+      7)
+        mongo_import_database
+        pause
+        ;;
+      8)
         mongo_clear_saved_password
         pause
         ;;
